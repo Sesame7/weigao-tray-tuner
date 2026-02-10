@@ -1,0 +1,68 @@
+# weigao-tray-tuner
+
+Single-image tuning UI for the Weigao tray detector.
+
+## Purpose
+
+weigao-tray-tuner is the tuning shell for detector logic synced from VisionRuntime.
+This repo focuses on:
+
+- visual parameter adjustment
+- anchor placement
+- overlay-based inspection review
+
+Detector algorithm logic remains in the synced detector files under `detect/`.
+
+## Sync Workflow (Manual Copy)
+
+Manually copy from VisionRuntime:
+
+- `VisionRuntime/config/detect_weigao_tray.yaml` -> `weigao-tray-tuner/config/detect_weigao_tray.yaml`
+- `VisionRuntime/detect/*` -> `weigao-tray-tuner/detect/*`
+- optional samples -> `weigao-tray-tuner/data/images/*`
+
+## Launch
+
+```powershell
+pip install -r requirements.txt
+python main.py
+```
+
+## UI Workflow
+
+1. Click `Open` to load an image.
+2. Drag 6 anchors (`0/1/2` x `L/R`) and adjust parameters.
+3. Click `Detect` to run inspection and update overlay.
+4. Optional: use `Prev/Next` to browse images in the same folder.
+
+After `Detect`, the displayed image is the detector overlay returned by `detect/weigao_tray.py`.
+
+## Config Load/Save Behavior
+
+- Load priority:
+  1. `config.yaml` (working config)
+  2. `config/detect_weigao_tray.yaml` (defaults fallback)
+- Save target after successful `Detect`:
+  - `config.yaml`
+- If params were not changed, no file write occurs.
+
+## Project Layout
+
+- `main.py`: thin application entrypoint
+- `app/__init__.py`: app package export surface
+- `app/controller.py`: app workflow controller
+- `ui/control_panel.py`: right parameter panel
+- `ui/image_view.py`: image canvas, overlays, anchors, nav hit areas
+- `core/grid_utils.py`: ROI grid generation helpers
+- `core/params.py`: YAML load/merge/save
+- `core/detector.py`: adapter to synced detector
+- `detect/`: synced detector package from VisionRuntime
+- `config/`: synced detector config
+- `data/`: sample images
+
+## Docs
+
+- `docs/app_design.md`: weigao-tray-tuner app design and runtime flow
+- `docs/detect.md`: detector reference and compatibility constraints
+- `docs/sync_contract.md`: sync contract with VisionRuntime
+- `docs/ui_param_mapping.md`: UI label to detector key mapping

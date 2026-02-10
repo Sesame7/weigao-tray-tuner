@@ -785,4 +785,3 @@ class WeigaoTrayDetector:
 
 
 __all__ = ["WeigaoTrayDetector"]
-

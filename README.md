@@ -28,6 +28,31 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Packaging (PyInstaller onedir)
+
+Build a folder-based package (`onedir`):
+
+```powershell
+pip install pyinstaller
+pyinstaller --noconfirm --clean --windowed --name weigao-tray-tuner main.py
+```
+
+After build, copy the detector default config next to the generated exe:
+
+- source: `config/detect_weigao_tray.yaml`
+- target: `dist/weigao-tray-tuner/detect_weigao_tray.yaml`
+
+Run:
+
+- `dist/weigao-tray-tuner/weigao-tray-tuner.exe`
+
+Notes:
+
+- Keep the whole `dist/weigao-tray-tuner/` folder together (do not move only the exe).
+- The packaged app reads/writes `config.yaml` in the same folder as the exe.
+- The packaged app expects `detect_weigao_tray.yaml` in the same folder as the exe.
+- `onedir` output includes runtime dependencies under `_internal/` (OpenCV / NumPy / Tk); this is normal.
+
 ## UI Workflow
 
 1. Click `Open` to load an image.
@@ -41,7 +66,8 @@ After `Detect`, the displayed image is the detector overlay returned by `detect/
 
 - Load priority:
   1. `config.yaml` (working config)
-  2. `config/detect_weigao_tray.yaml` (defaults fallback)
+  2. `detect_weigao_tray.yaml` (defaults fallback, packaged app)
+  3. `config/detect_weigao_tray.yaml` (defaults fallback, source repo compatibility)
 - Save target after successful `Detect`:
   - `config.yaml`
 - If params were not changed, no file write occurs.

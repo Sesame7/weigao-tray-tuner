@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -16,8 +17,26 @@ from core.grid_utils import generate_grid_rois
 from ui.control_panel import ControlPanel
 from ui.image_view import ImageView
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-SYNC_CONFIG_PATH = BASE_DIR / "config" / "detect_weigao_tray.yaml"
+
+def _source_base_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _runtime_base_dir() -> Path:
+    # PyInstaller: use the executable directory for user-editable files.
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return _source_base_dir()
+
+
+BASE_DIR = _runtime_base_dir()
+SYNC_CONFIG_NAME = "detect_weigao_tray.yaml"
+SYNC_CONFIG_PATH = BASE_DIR / SYNC_CONFIG_NAME
+if not SYNC_CONFIG_PATH.exists():
+    for candidate in (BASE_DIR / "config" / SYNC_CONFIG_NAME,):
+        if candidate.exists():
+            SYNC_CONFIG_PATH = candidate
+            break
 WORK_CONFIG_PATH = BASE_DIR / "config.yaml"
 DATA_DIR = BASE_DIR / "data"
 SAMPLES_DIR = str(DATA_DIR / "images")

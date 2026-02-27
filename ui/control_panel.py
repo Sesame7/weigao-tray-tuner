@@ -15,7 +15,7 @@ from ui.param_state import ParamState
 
 LABEL_COL_MIN = 240
 ENTRY_COL_MIN = 92
-PANEL_WIDTH = 360
+PANEL_WIDTH = 380
 SECTION_LEFT_PAD = 6
 ROW_GAP_X = 4
 ENTRY_BORDER_OK = "#b8b8b8"

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import sys
 import traceback
 from pathlib import Path
@@ -13,7 +12,11 @@ from tkinter import filedialog, ttk
 
 from core import detector
 from core import params as params_mod
-from core.grid_utils import generate_grid_rois
+from core.slot_layout_utils import (
+    clamp_slot_layout_to_image,
+    generate_grid_rois,
+)
+from app.image_session import ImageSession
 from ui.control_panel import ControlPanel
 from ui.image_view import ImageView
 
@@ -46,11 +49,104 @@ GUIDANCE_ADJUST = "Adjust anchors or params, then click Detect (Ctrl+R)."
 GUIDANCE_REVIEW = "Review the overlay, adjust if needed, then Detect again."
 
 
-def _natural_key(name: str) -> List[Any]:
-    return [
-        int(part) if part.isdigit() else part.lower()
-        for part in re.split(r"(\d+)", name)
-    ]
+class DisplayState:
+    def __init__(self) -> None:
+        self.source_bgr: Optional[np.ndarray] = None
+        self.showing_source_image = False
+        self.scale_x = 1.0
+        self.scale_y = 1.0
+
+    def set_source(self, bgr: np.ndarray) -> None:
+        self.source_bgr = bgr
+        self.showing_source_image = False
+        self.scale_x = 1.0
+        self.scale_y = 1.0
+
+    def set_display_image(self, img_bgr: Optional[np.ndarray]) -> None:
+        self.scale_x = 1.0
+        self.scale_y = 1.0
+        self.showing_source_image = (
+            self.source_bgr is not None
+            and img_bgr is not None
+            and img_bgr is self.source_bgr
+        )
+        if self.source_bgr is None or img_bgr is None:
+            return
+        src_h, src_w = self.source_bgr.shape[:2]
+        dst_h, dst_w = img_bgr.shape[:2]
+        if src_w > 0 and src_h > 0:
+            self.scale_x = float(dst_w) / float(src_w)
+            self.scale_y = float(dst_h) / float(src_h)
+
+    def to_display_point(self, x: int, y: int) -> tuple[int, int]:
+        return (
+            int(round(float(x) * self.scale_x)),
+            int(round(float(y) * self.scale_y)),
+        )
+
+    def to_source_point(self, x: float, y: float) -> tuple[float, float]:
+        sx = self.scale_x if self.scale_x > 0 else 1.0
+        sy = self.scale_y if self.scale_y > 0 else 1.0
+        return float(x) / sx, float(y) / sy
+
+
+class TuningState:
+    def __init__(
+        self,
+        *,
+        load_path: Path,
+        save_path: Path,
+        defaults_path: Path,
+    ) -> None:
+        self.load_path = Path(load_path)
+        self.save_path = Path(save_path)
+        self.defaults_path = Path(defaults_path)
+        self.params: Dict[str, Any] = params_mod.load_effective_params(
+            str(self.load_path),
+            defaults_path=str(self.defaults_path),
+        )
+        self._dirty = False
+
+    def mark_dirty(self) -> None:
+        self._dirty = True
+
+    def save_if_dirty(self) -> bool:
+        if not self._dirty:
+            return False
+        params_mod.save_params(str(self.save_path), self.params)
+        self._dirty = False
+        return True
+
+
+def is_text_input_focused(root: tk.Misc) -> bool:
+    widget = root.focus_get()
+    return isinstance(widget, (tk.Entry, ttk.Entry))
+
+
+def bind_app_shortcuts(
+    root: tk.Misc,
+    *,
+    on_open,
+    on_run,
+    on_prev,
+    on_next,
+    should_ignore_lr,
+) -> None:
+    root.bind("<Control-o>", lambda _e: on_open())
+    root.bind("<Control-r>", lambda _e: on_run())
+
+    def _on_prev(_event) -> None:
+        if should_ignore_lr():
+            return
+        on_prev()
+
+    def _on_next(_event) -> None:
+        if should_ignore_lr():
+            return
+        on_next()
+
+    root.bind("<Left>", _on_prev)
+    root.bind("<Right>", _on_next)
 
 
 class App:
@@ -61,15 +157,15 @@ class App:
             WORK_CONFIG_PATH if WORK_CONFIG_PATH.exists() else SYNC_CONFIG_PATH
         )
         self.config_save_path = WORK_CONFIG_PATH
-        self.params: Dict[str, Any] = params_mod.load_effective_params(
-            str(self.config_load_path), defaults_path=str(SYNC_CONFIG_PATH)
+        self.tuning = TuningState(
+            load_path=self.config_load_path,
+            save_path=self.config_save_path,
+            defaults_path=SYNC_CONFIG_PATH,
         )
-        self.dirty = True
-        self.params_dirty = False
-        self.img_rgb: Optional[np.ndarray] = None
-        self.img_bgr: Optional[np.ndarray] = None
-        self.image_paths: List[Path] = []
-        self.image_index: int = -1
+        self.display = DisplayState()
+        self.images = ImageSession(suffixes=IMAGE_SUFFIXES)
+        self._detector_instance = None
+        self._detector_dirty = True
 
         self.main = ttk.Frame(root, padding=6)
         self.main.pack(fill="both", expand=True)
@@ -96,6 +192,10 @@ class App:
         self._refresh_anchors()
         self._refresh_grid_overlays()
 
+    @property
+    def params(self) -> Dict[str, Any]:
+        return self.tuning.params
+
     @staticmethod
     def _clamp(v: int, lo: int, hi: int) -> int:
         return lo if v < lo else hi if v > hi else v
@@ -109,11 +209,7 @@ class App:
         self.panel.set_guidance(GUIDANCE_ADJUST)
 
     def _get_clamped_roi_size(self, img_w: int, img_h: int) -> tuple[int, int]:
-        rw = self._clamp(int(self.params["grid"]["roi"]["w"]), 1, img_w)
-        rh = self._clamp(int(self.params["grid"]["roi"]["h"]), 1, img_h)
-        self.params["grid"]["roi"]["w"] = rw
-        self.params["grid"]["roi"]["h"] = rh
-        return rw, rh
+        return clamp_slot_layout_to_image(img_w, img_h, self.params)
 
     def _clamp_anchor_xy(
         self, ix: float, iy: float, img_w: int, img_h: int, roi_w: int, roi_h: int
@@ -125,155 +221,129 @@ class App:
     def _refresh_editor_view(
         self, *, show_source_image: bool, update_nav: bool
     ) -> None:
-        if show_source_image and self.img_rgb is not None:
-            self.view.set_image(self.img_rgb)
+        if (
+            show_source_image
+            and self.display.source_bgr is not None
+            and not self.display.showing_source_image
+        ):
+            self._set_display_image(self.display.source_bgr)
         self._refresh_anchors()
         self._refresh_grid_overlays()
         if update_nav:
             self._update_nav_buttons()
 
+    def _set_display_image(self, img_bgr: Optional[np.ndarray]) -> None:
+        self.view.set_image(img_bgr)
+        self.display.set_display_image(img_bgr)
+
     def _bind_shortcuts(self) -> None:
-        self.root.bind("<Control-o>", lambda _e: self.open_image())
-        self.root.bind("<Control-r>", lambda _e: self.run())
-        self.root.bind("<Left>", self._on_prev_shortcut)
-        self.root.bind("<Right>", self._on_next_shortcut)
-
-    def _focus_is_text_input(self) -> bool:
-        w = self.root.focus_get()
-        return isinstance(w, (tk.Entry, ttk.Entry))
-
-    def _on_prev_shortcut(self, _event) -> None:
-        if self._focus_is_text_input():
-            return
-        self.prev_image()
-
-    def _on_next_shortcut(self, _event) -> None:
-        if self._focus_is_text_input():
-            return
-        self.next_image()
-
-    def _build_image_list(self, selected_path: Path) -> None:
-        folder = selected_path.parent
-        candidates = [
-            p
-            for p in folder.iterdir()
-            if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES
-        ]
-        candidates.sort(key=lambda p: _natural_key(p.name))
-        self.image_paths = candidates
-        self.image_index = -1
-        selected_abs = str(selected_path.resolve())
-        for i, p in enumerate(self.image_paths):
-            if str(p.resolve()) == selected_abs:
-                self.image_index = i
-                break
-        if self.image_index < 0:
-            self.image_paths.append(selected_path)
-            self.image_paths.sort(key=lambda p: _natural_key(p.name))
-            self.image_index = next(
-                i
-                for i, p in enumerate(self.image_paths)
-                if str(p.resolve()) == selected_abs
-            )
+        bind_app_shortcuts(
+            self.root,
+            on_open=self.open_image,
+            on_run=self.run,
+            on_prev=self.prev_image,
+            on_next=self.next_image,
+            should_ignore_lr=lambda: is_text_input_focused(self.root),
+        )
 
     def _update_nav_buttons(self) -> None:
-        total = len(self.image_paths)
-        has_prev = total > 1 and self.image_index > 0
-        has_next = total > 1 and self.image_index >= 0 and self.image_index < total - 1
-        self.view.set_nav_enabled(has_prev, has_next)
+        self.view.set_nav_enabled(self.images.has_prev, self.images.has_next)
 
-    def _load_image_path(self, path: Path, rebuild_list: bool) -> None:
-        if not path.exists():
-            raise FileNotFoundError(f"Image not found: {path}")
-        if rebuild_list:
-            self._build_image_list(path)
-        bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        if bgr is None:
-            raise ValueError(f"Failed to read image: {path}")
-        self.img_bgr = bgr
-        self.img_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        self.dirty = True
+    def _after_image_loaded(self, *, update_nav: bool) -> None:
         self._set_adjust_guidance()
         self.panel.set_detect_enabled(True)
-        self._refresh_editor_view(show_source_image=True, update_nav=True)
+        self._refresh_editor_view(show_source_image=True, update_nav=update_nav)
 
     def _go_to_image(self, index: int) -> None:
-        if index < 0 or index >= len(self.image_paths):
-            return
-        self.image_index = index
         try:
-            self._load_image_path(
-                self.image_paths[self.image_index], rebuild_list=False
-            )
+            moved = self._go_to_index(index)
+            if not moved:
+                return
+            self._after_image_loaded(update_nav=True)
+        except Exception:
+            self._update_nav_buttons()
+            self._handle_error()
+
+    def _load_selected_image(self, path: Path) -> None:
+        try:
+            self._load_image_path(path, rebuild_list=True)
+            self._after_image_loaded(update_nav=True)
         except Exception:
             self._handle_error()
 
     def prev_image(self) -> None:
-        self._go_to_image(self.image_index - 1)
+        self._go_to_image(self.images.index - 1)
 
     def next_image(self) -> None:
-        self._go_to_image(self.image_index + 1)
+        self._go_to_image(self.images.index + 1)
 
     def _mark_dirty(self) -> None:
-        self.dirty = True
-        self.params_dirty = True
+        self.tuning.mark_dirty()
+        self._detector_dirty = True
         self._set_adjust_guidance()
         self._refresh_editor_view(show_source_image=True, update_nav=False)
 
     def _refresh_anchors(self) -> None:
-        if self.img_bgr is None:
+        if self.display.source_bgr is None:
             self.view.set_anchors([])
             return
-        h, w = self.img_bgr.shape[:2]
-        rw, rh = self._get_clamped_roi_size(w, h)
+        h, w = self.display.source_bgr.shape[:2]
+        self._get_clamped_roi_size(w, h)
         anchors = []
-        for r in range(int(self.params["grid"]["rows"])):
-            xL, yT = self.params["grid"]["anchor_left"][r]
-            xR, _ = self.params["grid"]["anchor_right"][r]
-            xL = self._clamp(int(xL), 0, max(0, w - rw))
-            xR = self._clamp(int(xR), 0, max(0, w - rw))
-            yT = self._clamp(int(yT), 0, max(0, h - rh))
-            if xR < xL:
-                xR = xL
-            self.params["grid"]["anchor_left"][r] = [xL, yT]
-            self.params["grid"]["anchor_right"][r] = [xR, yT]
-            anchors.append((r, "L", xL, yT))
-            anchors.append((r, "R", xR, yT))
+        slot_layout = self.params["slot_layout"]
+        left_anchors = slot_layout["left_anchors"]
+        right_anchors = slot_layout["right_anchors"]
+        rows = len(slot_layout["slots_per_row"])
+        for r in range(rows):
+            left = left_anchors[r]
+            right = right_anchors[r]
+            xL, yT = int(left["x"]), int(left["y"])
+            xR, _ = int(right["x"]), int(right["y"])
+            xL_v, yT_v = self.display.to_display_point(xL, yT)
+            xR_v, _ = self.display.to_display_point(xR, yT)
+            anchors.append((r, "L", xL_v, yT_v))
+            anchors.append((r, "R", xR_v, yT_v))
         self.view.set_anchors(anchors)
 
     def _refresh_grid_overlays(self) -> None:
-        if self.img_bgr is None:
+        if self.display.source_bgr is None:
             self.view.set_overlays([])
             return
-        h, w = self.img_bgr.shape[:2]
+        show_roi = bool(self.params.get("debug_overlay", {}).get("slot_layout", False))
+        if not show_roi:
+            self.view.set_overlays([])
+            return
+        h, w = self.display.source_bgr.shape[:2]
         rois = generate_grid_rois(w, h, self.params)
-        show_roi = bool(self.params.get("dbg", {}).get("show_roi", False))
-        ovs: List[Dict[str, Any]] = (
-            [
+        ovs: List[Dict[str, Any]] = []
+        for _r, _c, x, y, rw, rh in rois:
+            x_v, y_v = self.display.to_display_point(x, y)
+            w_v, h_v = self.display.to_display_point(rw, rh)
+            ovs.append(
                 {
                     "type": "rect",
-                    "x": x,
-                    "y": y,
-                    "w": rw,
-                    "h": rh,
+                    "x": x_v,
+                    "y": y_v,
+                    "w": max(1, w_v),
+                    "h": max(1, h_v),
                     "color": DBG_COLOR,
                     "width": 1,
                 }
-                for _r, _c, x, y, rw, rh in rois
-            ]
-            if show_roi
-            else []
-        )
+            )
         self.view.set_overlays(ovs)
 
     def _on_anchor_drag(self, row: int, side: str, ix: float, iy: float) -> None:
-        if self.img_bgr is None:
+        if self.display.source_bgr is None:
             return
-        h, w = self.img_bgr.shape[:2]
+        h, w = self.display.source_bgr.shape[:2]
         rw, rh = self._get_clamped_roi_size(w, h)
-        x, y = self._clamp_anchor_xy(ix, iy, w, h, rw, rh)
-        xL, _ = self.params["grid"]["anchor_left"][row]
-        xR, _ = self.params["grid"]["anchor_right"][row]
+        src_x, src_y = self.display.to_source_point(ix, iy)
+        x, y = self._clamp_anchor_xy(src_x, src_y, w, h, rw, rh)
+        slot_layout = self.params["slot_layout"]
+        left_anchors = slot_layout["left_anchors"]
+        right_anchors = slot_layout["right_anchors"]
+        xL, _ = int(left_anchors[row]["x"]), int(left_anchors[row]["y"])
+        xR, _ = int(right_anchors[row]["x"]), int(right_anchors[row]["y"])
         if side == "L":
             xL = x
             if xR < xL:
@@ -282,13 +352,14 @@ class App:
             xR = x
             if xR < xL:
                 xL = xR
-        self.params["grid"]["anchor_left"][row] = [xL, y]
-        self.params["grid"]["anchor_right"][row] = [xR, y]
+        left_anchors[row] = {"x": xL, "y": y}
+        right_anchors[row] = {"x": xR, "y": y}
         self._mark_dirty()
 
     def _get_initial_open_dir(self) -> str:
-        if 0 <= self.image_index < len(self.image_paths):
-            return str(self.image_paths[self.image_index].parent)
+        current = self.images.current_path
+        if current is not None:
+            return str(current.parent)
         if Path(SAMPLES_DIR).exists():
             return SAMPLES_DIR
         if DATA_DIR.exists():
@@ -297,6 +368,25 @@ class App:
 
     def open_image(self) -> None:
         initial_dir = self._get_initial_open_dir()
+        path = self._open_image_dialog(initial_dir=initial_dir)
+        if path is None:
+            return
+        self._load_selected_image(path)
+
+    def run(self) -> None:
+        if self.display.source_bgr is None:
+            return
+        try:
+            overlay_bgr = self._run_detection()
+            self._set_display_image(overlay_bgr)
+            self._refresh_anchors()
+            self.panel.set_guidance(GUIDANCE_REVIEW)
+            self.tuning.save_if_dirty()
+            self._refresh_grid_overlays()
+        except Exception:
+            self._handle_error(redraw=True)
+
+    def _open_image_dialog(self, *, initial_dir: str) -> Path | None:
         path = filedialog.askopenfilename(
             title="Open image",
             filetypes=[
@@ -306,25 +396,41 @@ class App:
             initialdir=initial_dir,
         )
         if not path:
-            return
-        try:
-            self._load_image_path(Path(path), rebuild_list=True)
-        except Exception:
-            self._handle_error()
+            return None
+        return Path(path)
 
-    def run(self) -> None:
-        if self.img_bgr is None:
-            return
+    def _load_image_path(self, path: Path, *, rebuild_list: bool) -> None:
+        if not path.exists():
+            raise FileNotFoundError(f"Image not found: {path}")
+        bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise ValueError(f"Failed to read image: {path}")
+        if rebuild_list:
+            self.images.build_around(path)
+        self.display.set_source(bgr)
+
+    def _go_to_index(self, index: int) -> bool:
+        if not self.images.can_index(index):
+            return False
+        prev_index = self.images.index
+        self.images.set_index(index)
+        current_path = self.images.current_path
+        if current_path is None:
+            self.images.restore_index(prev_index)
+            return False
         try:
-            result = detector.inspect_image(self.img_bgr, self.params)
-            overlay_bgr = result["overlay_bgr"]
-            overlay_rgb = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)
-            self.view.set_image(overlay_rgb)
-            self.dirty = False
-            self.panel.set_guidance(GUIDANCE_REVIEW)
-            if self.params_dirty:
-                params_mod.save_params(str(self.config_save_path), self.params)
-                self.params_dirty = False
-            self._refresh_grid_overlays()
+            self._load_image_path(current_path, rebuild_list=False)
         except Exception:
-            self._handle_error(redraw=True)
+            self.images.restore_index(prev_index)
+            raise
+        return True
+
+    def _run_detection(self) -> np.ndarray:
+        if self.display.source_bgr is None:
+            raise RuntimeError("No source image loaded.")
+        if self._detector_instance is None or self._detector_dirty:
+            self._detector_instance = detector.create_runtime_detector(self.params)
+            self._detector_dirty = False
+        result = detector.run_detector(self._detector_instance, self.display.source_bgr)
+        overlay_bgr = result["overlay_bgr"]
+        return overlay_bgr

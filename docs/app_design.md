@@ -29,8 +29,8 @@ detection implementation lives in `VisionRuntime/detect/weigao_tray.py`.
   - Right-side parameter panel (UI labels, parsing, write-back to params dict).
 - `ui/image_view.py`
   - Left canvas: image rendering, overlays, anchor drag, prev/next hit areas.
-- `core/grid_utils.py`
-  - Grid ROI generation from `grid.*`.
+- `core/slot_layout_utils.py`
+  - Slot ROI generation from `slot_layout.*`.
 - `core/params.py`
   - YAML load + defaults merge + save.
 - `core/detector.py`
@@ -44,8 +44,8 @@ detection implementation lives in `VisionRuntime/detect/weigao_tray.py`.
   - Provides large prev/next click zones.
 - Right panel (`ControlPanel`)
   - Top buttons: `Open (Ctrl+O)` and `Detect (Ctrl+R)`.
-  - Pinned section: `Grid`.
-  - Tabbed sections: `A-C Rod Candidate`, `D Junction`, `E-G Final Decisions`.
+  - Pinned section: `Slot Layout`.
+  - Tabbed sections: `Stem`, `Junction Line`, `Color Band`, `Result Overlay`.
   - Bottom section: `Debug Overlay`.
   - Guidance text at bottom.
 

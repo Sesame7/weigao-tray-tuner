@@ -19,6 +19,7 @@ Manually copy from VisionRuntime:
 
 - `VisionRuntime/config/detect_weigao_tray.yaml` -> `weigao-tray-tuner/config/detect_weigao_tray.yaml`
 - `VisionRuntime/detect/*` -> `weigao-tray-tuner/detect/*`
+- `VisionRuntime/utils/image_codec.py` -> `weigao-tray-tuner/utils/image_codec.py`
 - optional samples -> `weigao-tray-tuner/data/images/*`
 
 ## Launch
@@ -79,7 +80,7 @@ After `Detect`, the displayed image is the detector overlay returned by `detect/
 - `app/controller.py`: app workflow controller
 - `ui/control_panel.py`: right parameter panel
 - `ui/image_view.py`: image canvas, overlays, anchors, nav hit areas
-- `core/grid_utils.py`: ROI grid generation helpers
+- `core/slot_layout_utils.py`: ROI grid generation helpers
 - `core/params.py`: YAML load/merge/save
 - `core/detector.py`: adapter to synced detector
 - `detect/`: synced detector package from VisionRuntime

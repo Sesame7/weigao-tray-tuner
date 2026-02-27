@@ -5,107 +5,22 @@ from typing import Any, Callable, Dict
 import tkinter as tk
 from tkinter import ttk
 
+from ui.param_schema import (
+    DEBUG_SECTION_TITLE,
+    FieldSpec,
+    SectionSpec,
+    build_section_specs,
+)
+from ui.param_state import ParamState
 
-FieldSpec = tuple[str, ...]
-SectionSpec = tuple[str, list[FieldSpec]]
 LABEL_COL_MIN = 240
 ENTRY_COL_MIN = 92
-PANEL_WIDTH = 420
+PANEL_WIDTH = 360
 SECTION_LEFT_PAD = 6
 ROW_GAP_X = 4
 ENTRY_BORDER_OK = "#b8b8b8"
 ENTRY_BORDER_ERR = "#d32f2f"
-DEBUG_SECTION_TITLE = "Debug Overlay"
-
-SECTION_SPECS: list[SectionSpec] = [
-    (
-        "Grid",
-        [
-            ("csv2", "Slot ROI size (W,H px)", "grid.roi.w", "grid.roi.h"),
-            ("csv3", "Slots per row (r0,r1,r2)", "grid.cols_per_row"),
-        ],
-    ),
-    (
-        "A-C Rod Candidate",
-        [
-            ("csv3", "Yellow HSV lower (H, S, V)", "yellow_hsv.lower"),
-            ("csv3", "Yellow HSV upper (H, S, V)", "yellow_hsv.upper"),
-            ("int", "Mask open kernel size (px)", "morph.open_k"),
-            ("int", "Mask close kernel size (px)", "morph.close_k"),
-            ("int", "Mask erode kernel size (px)", "morph.erode_k"),
-            ("int", "Erode iterations", "morph.erode_iter"),
-            ("float", "Max tilt from vertical (deg)", "rod.vertical_tol_deg"),
-            ("int", "Rod min bbox area (px^2)", "rod.min_bbox_area"),
-        ],
-    ),
-    (
-        "D Junction",
-        [
-            (
-                "float",
-                "Rod-bottom percentile of yellow pixels (%)",
-                "junction.rod_bottom_percentile",
-            ),
-            ("int", "Junction window up from rod-bottom (px)", "junction.win_up"),
-            ("int", "Junction window down from rod-bottom (px)", "junction.win_down"),
-            ("int", "Strip X offset from rod center (px)", "junction.strip_offset_x"),
-            ("int", "Junction strip half width (px)", "junction.strip_half_width"),
-            ("int", "White mask S upper (0-255)", "white.S_max"),
-            ("int", "White mask V lower (0-255)", "white.V_min"),
-            ("int", "Split profile smooth half window (rows)", "split.smooth_half_win"),
-            ("int", "Min rows above split", "split.min_rows_above"),
-            ("int", "Min rows below split", "split.min_rows_below"),
-            ("float", "Min white contrast (below-above)", "split.min_delta_white"),
-        ],
-    ),
-    (
-        "E-G Final Decisions",
-        [
-            ("int", "Max upward deviation from row baseline (px)", "height.delta_up"),
-            ("int", "Band Y offset start from junction (px)", "band.y0"),
-            ("int", "Band Y offset end from junction (px)", "band.y1"),
-            ("int", "Band search half width from rod center (px)", "band.half_width"),
-            ("int", "Band hue min", "band.H_low"),
-            ("int", "Band hue max", "band.H_high"),
-            ("int", "Band profile smooth half window (cols)", "band.smooth_half_win"),
-            ("int", "Band S-profile threshold", "band.S_thr"),
-            ("int", "Detected band width min (px)", "band.min_width"),
-            ("int", "Detected band width max (px)", "band.max_width"),
-            ("float", "Column-based reference shift (+/-px)", "offset.offset_base"),
-            ("float", "Allowed band-to-reference offset (px)", "offset.offset_tol"),
-        ],
-    ),
-    (
-        DEBUG_SECTION_TITLE,
-        [
-            ("bool", "Show slot ROI boxes", "dbg.show_roi"),
-            ("bool", "Show cleaned yellow mask", "dbg.show_mask"),
-            ("bool", "Show junction left/right strips", "dbg.show_strips"),
-            ("bool", "Show band search ROI", "dbg.show_band"),
-        ],
-    ),
-]
-
-PINNED_SECTIONS = ("Grid",)
-
-
-def _getp(d: Any, path: str) -> Any:
-    cur = d
-    for part in path.split("."):
-        cur = cur[int(part)] if isinstance(cur, list) else cur[part]
-    return cur
-
-
-def _setp(d: Any, path: str, value: Any) -> None:
-    parts = path.split(".")
-    cur = d
-    for part in parts[:-1]:
-        cur = cur[int(part)] if isinstance(cur, list) else cur[part]
-    last = parts[-1]
-    if isinstance(cur, list):
-        cur[int(last)] = value
-    else:
-        cur[last] = value
+NON_COLLAPSIBLE_SECTIONS = {"Slot Layout"}
 
 
 class ControlPanel:
@@ -117,9 +32,14 @@ class ControlPanel:
         on_open: Callable[[], None],
         on_run: Callable[[], None],
     ):
-        self.params = params
+        self.state = ParamState(params)
         self._on_params_change = on_params_change
+        self._on_open = on_open
+        self._on_run = on_run
+        self._detect_enabled = False
         self._tk_vars: list[tk.Variable] = []
+        self._section_specs: list[SectionSpec] = []
+        self._section_open: Dict[str, bool] = {}
 
         self.frame = ttk.Frame(parent, width=PANEL_WIDTH)
         self.frame.grid_propagate(False)
@@ -127,73 +47,71 @@ class ControlPanel:
         self.guidance = tk.StringVar(value="Open an image to start (Ctrl+O).")
         self.btn_detect: ttk.Button | None = None
 
-        self._build_panel(on_open, on_run)
+        self._rebuild_panel()
+
+    @property
+    def params(self) -> Dict[str, Any]:
+        return self.state.params
 
     def set_guidance(self, text: str) -> None:
         self.guidance.set(text)
 
     def set_detect_enabled(self, enabled: bool) -> None:
+        self._detect_enabled = bool(enabled)
         if self.btn_detect is not None:
             self.btn_detect.configure(state=("normal" if enabled else "disabled"))
+
+    def _rebuild_panel(self) -> None:
+        self._section_specs = build_section_specs(self.state.params)
+        self._tk_vars.clear()
+        for child in self.frame.winfo_children():
+            child.destroy()
+        self._build_panel(self._on_open, self._on_run)
 
     def _build_panel(
         self,
         on_open: Callable[[], None],
         on_run: Callable[[], None],
     ) -> None:
+        self.frame.columnconfigure(0, weight=1)
+        self.frame.rowconfigure(1, weight=1)
+
         r = 0
         btns = ttk.Frame(self.frame)
-        btns.grid(sticky="ew", row=r, column=0, columnspan=2)
+        btns.grid(sticky="ew", row=r, column=0)
         btns.columnconfigure(0, weight=1)
         btns.columnconfigure(1, weight=1)
         ttk.Button(btns, text="Open (Ctrl+O)", command=on_open).grid(
             sticky="ew", row=0, column=0, padx=(0, 2)
         )
         self.btn_detect = ttk.Button(
-            btns, text="Detect (Ctrl+R)", command=on_run, state="disabled"
+            btns,
+            text="Detect (Ctrl+R)",
+            command=on_run,
+            state=("normal" if self._detect_enabled else "disabled"),
         )
         self.btn_detect.grid(sticky="ew", row=0, column=1, padx=(2, 0))
         r += 1
 
+        content = ttk.Frame(self.frame)
+        content.grid(sticky="nsew", row=r, column=0, pady=(4, 0))
+        content.columnconfigure(0, weight=1)
+        r += 1
+
         rows_by_parent: Dict[Any, int] = {}
+        content_row = 0
 
         def next_row(parent: Any) -> int:
             row = rows_by_parent.get(parent, 0)
             rows_by_parent[parent] = row + 1
             return row
 
-        def add_section(title: str) -> ttk.Frame:
-            nonlocal r
-            section = ttk.Frame(self.frame)
-            section.grid(sticky="ew", row=r, column=0, columnspan=2, pady=(4, 0))
-            section.columnconfigure(0, weight=1)
-
-            ttk.Label(section, text=title, font=("TkDefaultFont", 10, "bold")).grid(
-                sticky="w", row=0, column=0
-            )
-            body = ttk.Frame(section)
-            body.grid(
-                sticky="ew", row=1, column=0, padx=(SECTION_LEFT_PAD, 0), pady=(2, 0)
-            )
-            body.columnconfigure(0, weight=0, minsize=LABEL_COL_MIN)
-            body.columnconfigure(1, weight=1, minsize=ENTRY_COL_MIN)
-
-            r += 1
-            return body
-
-        def add_tab(notebook: ttk.Notebook, title: str) -> ttk.Frame:
-            tab = ttk.Frame(notebook, padding=(6, 4))
-            tab.columnconfigure(0, weight=0, minsize=LABEL_COL_MIN)
-            tab.columnconfigure(1, weight=1, minsize=ENTRY_COL_MIN)
-            notebook.add(tab, text=title)
-            return tab
-
         def add_labeled_entry(
             parent: Any,
             label: str,
             value: str,
-            on_change: Callable[[str], None],
-            get_display: Callable[[], str] | None = None,
+            on_change: Callable[[str], bool],
+            get_display: Callable[[], str],
         ) -> None:
             row = next_row(parent)
             var = tk.StringVar(value=value)
@@ -218,21 +136,25 @@ class ControlPanel:
                 border = ENTRY_BORDER_OK if valid else ENTRY_BORDER_ERR
                 fg = "#000000" if valid else "#b71c1c"
                 entry.configure(
-                    highlightbackground=border, highlightcolor=border, fg=fg
+                    highlightbackground=border,
+                    highlightcolor=border,
+                    fg=fg,
                 )
 
-            def commit(*_):
+            def commit(*_) -> None:
                 text = var.get().strip()
                 if text == last_value["text"]:
                     set_entry_valid(True)
                     return
                 try:
-                    on_change(text)
-                    new_text = get_display() if get_display is not None else text
+                    should_rebuild = on_change(text)
+                    new_text = get_display()
                     last_value["text"] = new_text
                     var.set(new_text)
                     set_entry_valid(True)
                     self._on_params_change()
+                    if should_rebuild:
+                        self._rebuild_panel()
                 except Exception:
                     set_entry_valid(False)
 
@@ -240,186 +162,153 @@ class ControlPanel:
             entry.bind("<KP_Enter>", commit)
             entry.bind("<FocusOut>", commit)
 
-        def create_bool_checkbutton(
-            parent: Any, label: str, path: str
-        ) -> ttk.Checkbutton:
-            var = tk.BooleanVar(value=bool(_getp(self.params, path)))
+        def create_bool_checkbutton(parent: Any, field: FieldSpec) -> ttk.Checkbutton:
+            path = field.paths[0]
+            var = tk.BooleanVar(value=self.state.get_bool(path))
             self._tk_vars.append(var)
             cb = ttk.Checkbutton(
                 parent,
-                text=label,
+                text=field.label,
                 variable=var,
                 command=lambda v=var, p=path: (
-                    _setp(self.params, p, bool(v.get())),
+                    self.state.set_bool(p, bool(v.get())),
                     self._on_params_change(),
                 ),
             )
             return cb
 
-        def add_bool(parent: Any, label: str, path: str) -> None:
-            row = next_row(parent)
-            create_bool_checkbutton(parent, label, path).grid(
-                sticky="w", row=row, column=0, columnspan=2
+        def add_field(parent: Any, field: FieldSpec) -> None:
+            if field.kind == "bool":
+                row = next_row(parent)
+                create_bool_checkbutton(parent, field).grid(
+                    sticky="w", row=row, column=0, columnspan=2
+                )
+                return
+            add_labeled_entry(
+                parent,
+                field.label,
+                self.state.display_text(field),
+                lambda s, f=field: self.state.update_from_text(f, s),
+                lambda f=field: self.state.display_text(f),
             )
 
-        def add_field(parent: Any, spec: FieldSpec) -> None:
-            kind, label, *paths = spec
-
-            if kind == "bool":
-                add_bool(parent, label, paths[0])
-                return
-
-            if kind == "int":
-                path = paths[0]
-                add_labeled_entry(
-                    parent,
-                    label,
-                    str(_getp(self.params, path)),
-                    lambda s: _setp(self.params, path, int(float(s))),
-                    lambda: str(int(_getp(self.params, path))),
-                )
-                return
-
-            if kind == "float":
-                path = paths[0]
-                add_labeled_entry(
-                    parent,
-                    label,
-                    str(_getp(self.params, path)),
-                    lambda s: _setp(self.params, path, float(s)),
-                    lambda: str(float(_getp(self.params, path))),
-                )
-                return
-
-            if kind == "csv2":
-                path_a, path_b = paths
-
-                def apply_csv2(s: str) -> None:
-                    parts = [p.strip() for p in s.split(",")]
-                    if len(parts) != 2:
-                        raise ValueError("csv2 expects 2 values")
-                    a, b = (int(float(parts[0])), int(float(parts[1])))
-                    _setp(self.params, path_a, a)
-                    _setp(self.params, path_b, b)
-
-                add_labeled_entry(
-                    parent,
-                    label,
-                    f"{int(_getp(self.params, path_a))},{int(_getp(self.params, path_b))}",
-                    apply_csv2,
-                    lambda: (
-                        f"{int(_getp(self.params, path_a))},{int(_getp(self.params, path_b))}"
-                    ),
-                )
-                return
-
-            if kind == "csv3":
-                path = paths[0]
-
-                def apply_csv3(s: str) -> None:
-                    parts = [p.strip() for p in s.split(",")]
-                    if len(parts) != 3:
-                        raise ValueError("csv3 expects 3 values")
-                    vals = [int(float(p)) for p in parts]
-                    _setp(self.params, path, vals)
-
-                add_labeled_entry(
-                    parent,
-                    label,
-                    ",".join(str(int(x)) for x in _getp(self.params, path)),
-                    apply_csv3,
-                    lambda: ",".join(str(int(x)) for x in _getp(self.params, path)),
-                )
-                return
-
-            raise ValueError(f"Unsupported field kind: {kind}")
-
         def render_fields(
-            parent: Any, fields: list[FieldSpec], bool_columns: int | None = None
+            parent: Any,
+            fields: tuple[FieldSpec, ...],
+            bool_columns: int | None = None,
         ) -> None:
-            if bool_columns is not None and all(spec[0] == "bool" for spec in fields):
-                for i, spec in enumerate(fields):
-                    _kind, label, path = spec
+            if bool_columns is not None and all(
+                field.kind == "bool" for field in fields
+            ):
+                for i, field in enumerate(fields):
                     row_i = i // bool_columns
                     col_i = i % bool_columns
-                    create_bool_checkbutton(parent, label, path).grid(
+                    create_bool_checkbutton(parent, field).grid(
                         sticky="w", row=row_i, column=col_i, padx=(0, 8), pady=(0, 2)
                     )
                 return
             for field in fields:
                 add_field(parent, field)
 
-        specs_by_title: Dict[str, list[FieldSpec]] = {
-            title: fields for title, fields in SECTION_SPECS
-        }
+        def add_collapsible_section(
+            title: str,
+            fields: tuple[FieldSpec, ...],
+            *,
+            bool_columns: int | None = None,
+            default_open: bool = True,
+        ) -> None:
+            nonlocal content_row
+            section = ttk.Frame(content)
+            section.grid(sticky="ew", row=content_row, column=0, pady=(2, 0))
+            section.columnconfigure(0, weight=1)
+            content_row += 1
 
-        for pinned in PINNED_SECTIONS:
-            if pinned in specs_by_title:
-                fields = specs_by_title[pinned]
-                if pinned == "Grid":
-                    sec = ttk.Frame(self.frame)
-                    sec.grid(
-                        sticky="ew",
-                        row=r,
-                        column=0,
-                        columnspan=2,
-                        padx=(SECTION_LEFT_PAD, 0),
-                        pady=(4, 0),
-                    )
-                    sec.columnconfigure(0, weight=0, minsize=LABEL_COL_MIN)
-                    sec.columnconfigure(1, weight=1, minsize=ENTRY_COL_MIN)
-                    r += 1
-                else:
-                    sec = add_section(pinned)
-                render_fields(sec, fields)
+            is_open = self._section_open.get(title, default_open)
+            self._section_open[title] = bool(is_open)
 
-        stage_specs = [
-            (title, fields)
-            for title, fields in SECTION_SPECS
-            if title not in PINNED_SECTIONS and title != DEBUG_SECTION_TITLE
-        ]
-        if stage_specs:
-            tabs = ttk.Notebook(self.frame)
-            tabs.grid(sticky="nsew", row=r, column=0, columnspan=2, pady=(6, 2))
-            tabs_row = r
-            r += 1
+            header_label = ttk.Label(section, cursor="hand2")
+            header_label.grid(sticky="ew", row=0, column=0)
 
-            for title, fields in stage_specs:
-                tab = add_tab(tabs, title)
-                render_fields(tab, fields)
-
-            self.frame.rowconfigure(tabs_row, weight=1)
-
-        if DEBUG_SECTION_TITLE in specs_by_title:
-            fields = specs_by_title[DEBUG_SECTION_TITLE]
-            sec = ttk.Frame(self.frame)
-            sec.grid(
+            body = ttk.Frame(section)
+            body.grid(
                 sticky="ew",
-                row=r,
+                row=1,
                 column=0,
-                columnspan=2,
-                padx=(SECTION_LEFT_PAD, 2),
-                pady=(4, 0),
+                padx=(SECTION_LEFT_PAD, 0),
+                pady=(1, 0),
             )
-            for i in range(2):
-                sec.columnconfigure(i, weight=1)
-            r += 1
-            render_fields(sec, fields, bool_columns=2)
+            body.columnconfigure(0, weight=0, minsize=LABEL_COL_MIN)
+            body.columnconfigure(1, weight=1, minsize=ENTRY_COL_MIN)
+            render_fields(body, fields, bool_columns=bool_columns)
+
+            def _apply_state() -> None:
+                open_now = bool(self._section_open.get(title, True))
+                header_label.configure(
+                    text=(f"[-] {title}" if open_now else f"[+] {title}")
+                )
+                if open_now:
+                    body.grid()
+                else:
+                    body.grid_remove()
+
+            def _toggle() -> None:
+                self._section_open[title] = not bool(
+                    self._section_open.get(title, True)
+                )
+                _apply_state()
+
+            header_label.bind("<Button-1>", lambda _e: _toggle(), add="+")
+            _apply_state()
+
+        def add_plain_section(
+            fields: tuple[FieldSpec, ...],
+            *,
+            bool_columns: int | None = None,
+        ) -> None:
+            nonlocal content_row
+            body = ttk.Frame(content)
+            body.grid(sticky="ew", row=content_row, column=0, pady=(4, 0))
+            body.columnconfigure(0, weight=0, minsize=LABEL_COL_MIN)
+            body.columnconfigure(1, weight=1, minsize=ENTRY_COL_MIN)
+            content_row += 1
+            render_fields(body, fields, bool_columns=bool_columns)
+
+        debug_fields: tuple[FieldSpec, ...] | None = None
+        for section in self._section_specs:
+            if section.title == DEBUG_SECTION_TITLE:
+                debug_fields = section.fields
+                continue
+            bool_columns = 2 if section.title == DEBUG_SECTION_TITLE else None
+            if section.title in NON_COLLAPSIBLE_SECTIONS:
+                add_plain_section(section.fields, bool_columns=bool_columns)
+                continue
+            add_collapsible_section(
+                section.title,
+                section.fields,
+                bool_columns=bool_columns,
+                default_open=True,
+            )
 
         ttk.Separator(self.frame, orient="horizontal").grid(
-            sticky="ew", row=r, column=0, columnspan=2, pady=(8, 6)
+            sticky="ew", row=r, column=0, pady=(8, 2)
         )
         r += 1
 
         guidance_label = ttk.Label(
             self.frame, textvariable=self.guidance, justify="left"
         )
-        guidance_label.grid(sticky="ew", row=r, column=0, columnspan=2, pady=(6, 0))
+        guidance_label.grid(sticky="ew", row=r, column=0, pady=(0, 2))
+        r += 1
+
+        if debug_fields is not None:
+            debug_frame = ttk.Frame(self.frame)
+            debug_frame.grid(sticky="ew", row=r, column=0, pady=(0, 0))
+            debug_frame.columnconfigure(0, weight=1)
+            debug_frame.columnconfigure(1, weight=1)
+            render_fields(debug_frame, debug_fields, bool_columns=2)
 
         def _update_guidance_wraplength(_event) -> None:
             width = int(self.frame.winfo_width())
             guidance_label.configure(wraplength=max(200, width - 8))
 
         self.frame.bind("<Configure>", _update_guidance_wraplength, add="+")
-        self.frame.columnconfigure(0, weight=0)
-        self.frame.columnconfigure(1, weight=1)

@@ -25,32 +25,31 @@ weigao-tray-tuner does not implement detector stages directly. The call chain is
 
 1. `app/controller.py` calls `detector.inspect_image(img_bgr, params)`.
 2. `core/detector.py` instantiates `WeigaoTrayDetector`.
-3. `detect/weigao_tray.py` runs the actual A-G stage logic and returns overlay.
+3. `detect/weigao_tray.py` runs the actual stage logic and returns overlay.
 
-## Stage Contract (A-G Summary)
+## Stage Contract (Current)
 
 This is a compact contract for UI and parameter mapping only.
 
-- Stage A: yellow mask clean, `ROD_NOT_FOUND`
-- Stage B: center + tilt from vertical, `ROD_ANGLE_NG`
-- Stage C: bbox area gate, `ROD_BBOX_AREA_NG`
-- Stage D: junction split/contrast, `JUNCTION_NOT_FOUND`
-- Stage E: row baseline height decision, `HEIGHT_NG`
-- Stage F: band search in ROI under junction, `BAND_NOT_FOUND`
-- Stage G: band offset against column-dependent reference, `OFFSET_NG`
+- Stem stage: locate stem mask/center/anchor, `STEM_NOT_FOUND_NG`
+- Junction-line locate stage: find split line, `JUNCTION_LINE_NOT_FOUND_NG`
+- Junction-line height stage: row-median consistency check, `JUNCTION_LINE_HEIGHT_NG`
+- Color-band locate stage: band span in search window, `COLOR_BAND_NOT_FOUND_NG`
+- Color-band alignment stage: compare to column-based reference, `COLOR_BAND_ALIGNMENT_NG`
 
 First failing slot/code is returned as image-level NG result code.
 
 ## Overlay Contract Used by UI
 
 - Overlay image is returned by detector and shown directly in `ImageView`.
-- Grid overlay (`dbg.show_roi`) is additionally rendered by app-side helpers in
+- Grid overlay (`debug_overlay.slot_layout`) is additionally rendered by app-side
+  helpers in
   editor mode.
 - Debug toggles currently exposed in UI:
-  - `dbg.show_roi`
-  - `dbg.show_mask`
-  - `dbg.show_strips`
-  - `dbg.show_band`
+  - `debug_overlay.slot_layout`
+  - `debug_overlay.stem_mask`
+  - `debug_overlay.junction_line`
+  - `debug_overlay.color_band`
 
 ## What Must Stay Aligned
 

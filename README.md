@@ -1,17 +1,61 @@
 # wego-tray-tuner
 
-Single-image tuning UI for the Wego tray detector.
+Interactive tuning workspace for Wego tray inspection parameters, aligned with VisionRuntime detector logic.
 
-## Purpose
+wego-tray-tuner is a visual tuning tool built around detector logic synced from VisionRuntime. It focuses on parameter visibility, anchor editing, and overlay-based inspection review, so tuning can be done interactively instead of only through raw config files.
 
-wego-tray-tuner is the tuning shell for detector logic synced from VisionRuntime.
-This repo focuses on:
+## Overview
+
+This project is intended for single-image detector tuning and review in a practical engineering workflow. It provides:
 
 - visual parameter adjustment
-- anchor placement
-- overlay-based inspection review
+- anchor placement and correction
+- overlay-based inspection result review
+- local working-config saveback after successful detection
 
-Detector algorithm logic remains in the synced detector files under `detect/`.
+Detector algorithm logic remains in the synced files under `detect/`, while this repository provides the UI shell and tuning workflow around that logic.
+
+## What this tool is for
+
+wego-tray-tuner exists to make detector tuning more maintainable and reviewable.
+
+Instead of editing inspection parameters only in YAML and re-running the full runtime, this tool lets you:
+
+- load an image directly
+- move anchors visually
+- adjust parameters interactively
+- run detection and inspect the returned overlay immediately
+- save the current working state for continued tuning
+
+This makes it useful as a focused tuning workspace for detector recipes that will later be used with VisionRuntime.
+
+## Relationship to VisionRuntime
+
+This repository is not a separate detector implementation.
+
+Its role is:
+
+- **UI and tuning workflow** live here
+- **detector logic** is synced from VisionRuntime under `detect/`
+- **detector recipes** are loaded from `config/wego_tray/`
+
+This structure helps keep tuning behavior aligned with the runtime behavior used in the main inspection project.
+
+## Highlights
+
+- Interactive anchor placement for Wego tray inspection
+- Visual parameter adjustment in a dedicated tuning UI
+- Overlay-based inspection review after each detection run
+- Neighbor-image browsing with `Prev/Next` for quick comparison
+- Working-config persistence after successful tuning
+- Synced detector logic for consistency with VisionRuntime
+
+## UI Preview
+
+![wego-tray-tuner UI](docs/assets/ui-preview.png)
+
+The UI provides interactive anchor placement, parameter editing, and overlay-based inspection review in a single workspace.
+It is designed to make detector tuning easier to validate visually before syncing recipes back into a runtime workflow.
 
 ## Sync Workflow (Manual Copy)
 
@@ -22,7 +66,7 @@ Manually copy from VisionRuntime:
 - `VisionRuntime/utils/image_codec.py` -> `wego-tray-tuner/utils/image_codec.py`
 - optional samples -> `wego-tray-tuner/data/images/*`
 
-## Launch
+## Quick Start
 
 ```powershell
 pip install -r requirements.txt
@@ -65,11 +109,17 @@ After `Detect`, the displayed image is the detector overlay returned by `detect/
 
 ## Config Load/Save Behavior
 
-- Load priority:
-  1. `config/wego_tray/=@WORKING_+.yaml` (working config)
-  2. first lexicographically sorted recipe under `config/wego_tray/*.yaml`, excluding `_`-prefixed files and `=@WORKING_+.yaml`
-- Save target after successful `Detect`:
-  - `config/wego_tray/=@WORKING_+.yaml`
+### Load priority
+
+1. `config/wego_tray/=@WORKING_+.yaml` (working config)
+2. first lexicographically sorted recipe under `config/wego_tray/*.yaml`, excluding `_`-prefixed files and `=@WORKING_+.yaml`
+
+### Save target after successful `Detect`
+
+- `config/wego_tray/=@WORKING_+.yaml`
+
+### Write behavior
+
 - If params were not changed, no file write occurs.
 
 ## Project Layout
